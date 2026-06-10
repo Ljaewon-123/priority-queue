@@ -2,17 +2,20 @@ export type Comparator<T> = (a: T, b: T) => number;
 
 export class PriorityQueue<T> {
   private heap: T[] = [];
-  compare: Comparator<T>;
+  private compare: Comparator<T>;
   constructor(compare: Comparator<T>) {
     this.compare = compare;
   }
 
-  push(): void {
-    this.heap.push();
-    const len = this.heap.length - 1;
-    this.compare(this.heap[len], this.heap[Math.floor(len / 2)]) < 0
-      ? (this.heap[len] = this.heap[Math.floor(len / 2)])
-      : null;
+  push(value: T): void {
+    this.heap.push(value);
+    let idx = this.heap.length - 1; // first try end index
+    while (idx > 0) {
+      const parent = Math.floor((idx - 1) / 2);
+      if (this.compare(this.heap[idx], this.heap[parent]) >= 0) return;
+      [this.heap[idx], this.heap[parent]] = [this.heap[parent], this.heap[idx]];
+      idx = parent;
+    }
     return;
   }
 
