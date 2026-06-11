@@ -7,12 +7,11 @@ describe('PriorityQueue', () => {
     pq.push(3);
     pq.push(1);
     pq.push(2);
-    // TODO: pop 구현 후 주석 해제
-    // expect(pq.pop()).toBe(1);
-    // expect(pq.pop()).toBe(2);
-    // expect(pq.pop()).toBe(3);
-    expect(pq.peek()).toBe(1);
-    expect(pq.size).toBe(3);
+    expect(pq.pop()).toBe(1);
+    expect(pq.pop()).toBe(2);
+    expect(pq.pop()).toBe(3);
+    expect(pq.pop()).toBeUndefined();
+    expect(pq.size).toBe(0);
   });
 
   it('keeps the smallest at the top as elements are pushed', () => {
