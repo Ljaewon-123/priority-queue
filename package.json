@@ -25,6 +25,14 @@
   "files": [
     "dist"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ljaewon-123/priority-queue.git"
+  },
+  "homepage": "https://github.com/Ljaewon-123/priority-queue#readme",
+  "bugs": {
+    "url": "https://github.com/Ljaewon-123/priority-queue/issues"
+  },
   "keywords": [
     "priority-queue",
     "heap",
