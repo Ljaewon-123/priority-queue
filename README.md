@@ -23,6 +23,9 @@ pq.push(3);
 pq.push(1);
 pq.push(2);
 
+pq.peek();  // 1  (read without removing)
+pq.size;    // 3
+
 pq.pop();  // 1
 pq.pop();  // 2
 pq.pop();  // 3
