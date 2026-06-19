@@ -1,6 +1,6 @@
 {
   "name": "@nogaree/priority-queue",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A simple priority queue",
   "license": "MIT",
   "type": "module",
