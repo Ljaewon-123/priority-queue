@@ -1,5 +1,39 @@
 export type Comparator<T> = (a: T, b: T) => number;
 
+export const Action = {
+  Push: 'push',
+  Pop: 'pop',
+} as const;
+export type Action = (typeof Action)[keyof typeof Action];
+
+type QueueRef<T> = PriorityQueue<T> | (() => PriorityQueue<T>);
+
+interface UseQueueOptions<T> {
+  action: Action;
+  queue: QueueRef<T>;
+}
+
+function resolveQueue<T>(ref: QueueRef<T>): PriorityQueue<T> {
+  return typeof ref === 'function' ? ref() : ref;
+}
+
+export function UseQueue<T>(options: UseQueueOptions<T>) {
+  return (value: (...args: any[]) => any, _context: ClassMethodDecoratorContext) => {
+    if (options.action === Action.Push) {
+      return (...args: any[]) => {
+        const result = value(...args) as T;
+        resolveQueue(options.queue).push(result);
+        return result;
+      };
+    }
+
+    return (...args: any[]) => {
+      const popped = resolveQueue(options.queue).pop();
+      return value(...args, popped);
+    };
+  };
+}
+
 export class PriorityQueue<T> {
   private heap: T[] = [];
   private compare: Comparator<T>;

@@ -56,6 +56,119 @@ pq.push({ name: 'high', priority: 1 });
 pq.pop(); // { name: 'high', priority: 1 }
 ```
 
+## Method Decorators
+
+Attach a queue to class methods declaratively with `UseQueue`.
+
+**Requirements:** TypeScript 5.0+, no `experimentalDecorators` flag.
+NestJS 10+ users: remove `"experimentalDecorators": true` from tsconfig to enable Stage 3 decorator support.
+
+### `Action.Push` — auto-push the return value
+
+The decorated method runs normally, and its return value is automatically pushed to the queue.
+
+```ts
+import { PriorityQueue, Action, UseQueue } from '@nogaree/priority-queue';
+
+type Task = { name: string; priority: number };
+
+const queue = new PriorityQueue<Task>((a, b) => a.priority - b.priority);
+
+class TaskScheduler {
+  @UseQueue({ action: Action.Push, queue })
+  schedule(name: string): Task {
+    return { name, priority: Math.random() };
+    // return value is automatically pushed to queue
+  }
+}
+
+const scheduler = new TaskScheduler();
+scheduler.schedule('A');
+scheduler.schedule('B');
+
+queue.size; // 2
+```
+
+### `Action.Pop` — inject the top item as the last argument
+
+Before the method body runs, `queue.pop()` is called and the result is injected as the last parameter. The caller does not pass that argument. If the queue is empty, the injected value is `undefined`.
+
+```ts
+const queue = new PriorityQueue<Task>((a, b) => a.priority - b.priority);
+queue.push({ name: 'low',  priority: 10 });
+queue.push({ name: 'high', priority:  1 });
+
+class TaskWorker {
+  @UseQueue({ action: Action.Pop, queue })
+  process(popped: Task | undefined): void {
+    if (!popped) return;
+    console.log(`Processing: ${popped.name}`);
+  }
+}
+
+const worker = new TaskWorker();
+worker.process(); // queue.pop() runs first → Processing: high
+worker.process(); // queue.pop() runs first → Processing: low
+worker.process(); // queue is empty          → (nothing logged)
+```
+
+If the method has other parameters, they are passed normally and the popped value is appended last:
+
+```ts
+class TaskWorker {
+  @UseQueue({ action: Action.Pop, queue })
+  process(label: string, popped: Task | undefined): void {
+    console.log(label, popped?.name);
+    return;
+  }
+}
+
+worker.process('next'); // label = 'next', popped = queue.pop()
+```
+
+### Dynamic queue
+
+Pass a function instead of a queue instance to resolve the queue at call time:
+
+```ts
+let activeQueue = new PriorityQueue<Task>((a, b) => a.priority - b.priority);
+
+class Worker {
+  @UseQueue({ action: Action.Pop, queue: () => activeQueue })
+  process(popped: Task | undefined): void { ... }
+}
+
+// Swap the queue at runtime — the decorator picks it up automatically
+activeQueue = anotherQueue;
+```
+
+### Push + Pop pipeline
+
+```ts
+const queue = new PriorityQueue<Task>((a, b) => a.priority - b.priority);
+
+class Pipeline {
+  @UseQueue({ action: Action.Push, queue })
+  produce(name: string, priority: number): Task {
+    return { name, priority }; // return value is pushed to queue
+  }
+
+  @UseQueue({ action: Action.Pop, queue })
+  consume(popped: Task | undefined): void {
+    if (popped) console.log(`Processing: ${popped.name}`);
+  }
+}
+
+const p = new Pipeline();
+p.produce('A', 30);
+p.produce('B', 10);
+p.produce('C', 20);
+
+p.consume(); // queue.pop() runs first → Processing: B  (priority 10)
+p.consume(); // queue.pop() runs first → Processing: C  (priority 20)
+p.consume(); // queue.pop() runs first → Processing: A  (priority 30)
+```
+
 ## API
 
 ### `new PriorityQueue<T>(compare: (a: T, b: T) => number)`
