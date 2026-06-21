@@ -23,12 +23,12 @@ pq.push(3);
 pq.push(1);
 pq.push(2);
 
-pq.peek();  // 1  (read without removing)
-pq.size;    // 3
+pq.peek(); // 1  (read without removing)
+pq.size; // 3
 
-pq.pop();  // 1
-pq.pop();  // 2
-pq.pop();  // 3
+pq.pop(); // 1
+pq.pop(); // 2
+pq.pop(); // 3
 ```
 
 ### Max-heap (largest value first)
@@ -40,7 +40,7 @@ pq.push(3);
 pq.push(1);
 pq.push(2);
 
-pq.pop();  // 3
+pq.pop(); // 3
 ```
 
 ### Custom objects
@@ -50,8 +50,8 @@ type Task = { name: string; priority: number };
 
 const pq = new PriorityQueue<Task>((a, b) => a.priority - b.priority);
 
-pq.push({ name: 'low',  priority: 10 });
-pq.push({ name: 'high', priority: 1  });
+pq.push({ name: 'low', priority: 10 });
+pq.push({ name: 'high', priority: 1 });
 
 pq.pop(); // { name: 'high', priority: 1 }
 ```
