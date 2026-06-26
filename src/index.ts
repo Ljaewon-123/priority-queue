@@ -84,4 +84,18 @@ export class PriorityQueue<T> {
   get size(): number {
     return this.heap.length;
   }
+
+  get isEmpty(): boolean {
+    return this.heap.length === 0;
+  }
+
+  clear(): void {
+    this.heap = [];
+  }
+
+  drain(): T[] {
+    const result: T[] = [];
+    while (!this.isEmpty) result.push(this.pop()!);
+    return result;
+  }
 }

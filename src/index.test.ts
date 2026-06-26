@@ -58,6 +58,39 @@ describe('PriorityQueue', () => {
     expect(pq.pop()!.name).toBe('a');
   });
 
+  it('isEmpty returns true on empty queue and false otherwise', () => {
+    const pq = new PriorityQueue<number>((a, b) => a - b);
+    expect(pq.isEmpty).toBe(true);
+    pq.push(1);
+    expect(pq.isEmpty).toBe(false);
+    pq.pop();
+    expect(pq.isEmpty).toBe(true);
+  });
+
+  it('clear empties the queue', () => {
+    const pq = new PriorityQueue<number>((a, b) => a - b);
+    pq.push(1);
+    pq.push(2);
+    pq.clear();
+    expect(pq.size).toBe(0);
+    expect(pq.isEmpty).toBe(true);
+    expect(pq.pop()).toBeUndefined();
+  });
+
+  it('drain returns all elements in priority order and empties the queue', () => {
+    const pq = new PriorityQueue<number>((a, b) => a - b);
+    pq.push(3);
+    pq.push(1);
+    pq.push(2);
+    expect(pq.drain()).toEqual([1, 2, 3]);
+    expect(pq.isEmpty).toBe(true);
+  });
+
+  it('drain on empty queue returns empty array', () => {
+    const pq = new PriorityQueue<number>((a, b) => a - b);
+    expect(pq.drain()).toEqual([]);
+  });
+
   it('drains many random elements in sorted order', () => {
     const pq = new PriorityQueue<number>((a, b) => a - b);
     const values = Array.from({ length: 1000 }, () => Math.floor(Math.random() * 10000));
@@ -66,7 +99,7 @@ describe('PriorityQueue', () => {
     const drained: number[] = [];
     while (pq.size > 0) drained.push(pq.pop()!);
 
-    expect(drained).toEqual([...values].sort((a, b) => a - b));
+    expect(drained).toEqual(values.toSorted((a, b) => a - b));
   });
 });
 
