@@ -142,14 +142,14 @@ class Worker {
 activeQueue = anotherQueue;
 ```
 
-### `Action.From` — 메서드 반환값(iterable)으로 큐 전체를 교체
+### `Action.From` — replace the entire queue with the method's return value (iterable)
 
-메서드가 배열 등 iterable을 반환하면, 그 결과로 큐를 통째로 교체합니다. 내부적으로 heapify(O(n))를 사용해서 `push`를 n번 반복(O(n log n))하는 것보다 효율적입니다.
+When the decorated method returns an iterable (e.g. an array), the queue is replaced wholesale with that result. Internally uses heapify (`O(n)`), which is more efficient than pushing elements one by one (`O(n log n)`).
 
-**동작 순서:**
-1. 메서드 실행
-2. 반환된 iterable로 큐 내용을 전부 교체 (기존 내용 사라짐)
-3. 반환값은 호출자에게 그대로 전달
+**Execution order:**
+1. The method runs.
+2. The queue's contents are fully replaced by the returned iterable (previous contents are discarded).
+3. The return value is passed through to the caller unchanged.
 
 ```ts
 import { PriorityQueue, Action, UseQueue } from '@nogaree/priority-queue';
@@ -161,7 +161,7 @@ const queue = new PriorityQueue<Task>((a, b) => a.priority - b.priority);
 class TaskLoader {
   @UseQueue({ action: Action.From, queue })
   load(): Task[] {
-    // 이 반환값 전체가 큐로 들어감
+    // the entire return value is loaded into the queue
     return [
       { name: 'C', priority: 30 },
       { name: 'A', priority: 10 },
@@ -172,27 +172,27 @@ class TaskLoader {
 
 const loader = new TaskLoader();
 loader.load();
-// queue에는 위 3개가 heapify된 상태로 들어있음
+// queue now holds all 3 items in heapified order
 
 queue.pop(); // { name: 'A', priority: 10 }
 queue.pop(); // { name: 'B', priority: 20 }
 queue.pop(); // { name: 'C', priority: 30 }
 ```
 
-`load()`를 다시 호출하면 큐가 처음부터 다시 채워집니다. 이전 내용은 사라집니다:
+Calling `load()` again resets the queue from scratch — previous contents are gone:
 
 ```ts
-loader.load(); // 큐가 다시 3개로 초기화됨
+loader.load(); // queue is re-initialized with 3 items
 queue.size;    // 3
 ```
 
-`Action.Push`와의 차이:
+Difference from `Action.Push`:
 
 | | `Action.Push` | `Action.From` |
 |---|---|---|
-| 반환값 타입 | `T` (단일 값) | `Iterable<T>` (여러 값) |
-| 기존 큐 내용 | 유지 (추가됨) | 교체됨 |
-| 복잡도 | O(log n) | O(n) heapify |
+| Return type | `T` (single value) | `Iterable<T>` (multiple values) |
+| Existing queue contents | Preserved (item appended) | Replaced |
+| Complexity | O(log n) | O(n) heapify |
 
 ### Push + Pop pipeline
 
@@ -280,14 +280,14 @@ pq.isEmpty; // true
 
 ### `reset(iterable: Iterable<T>): void`
 
-큐의 내용을 iterable로 통째로 교체합니다. 기존 comparator를 그대로 사용하며 heapify로 동작합니다. `O(n)`.
+Replaces the queue's contents with the given iterable. Keeps the existing comparator and uses heapify internally. `O(n)`.
 
 ```ts
 const pq = new PriorityQueue<number>((a, b) => a - b);
 pq.push(99);
 
 pq.reset([3, 1, 2]);
-pq.drain(); // [1, 2, 3]  — 99는 사라짐
+pq.drain(); // [1, 2, 3]  — 99 is gone
 ```
 
 ### `static PriorityQueue.from<T>(iterable: Iterable<T>, compare: (a: T, b: T) => number): PriorityQueue<T>`
