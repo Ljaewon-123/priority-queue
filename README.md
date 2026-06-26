@@ -191,6 +191,52 @@ Returns the highest-priority value without removing it. Returns `undefined` if t
 
 The number of elements currently in the queue.
 
+### `isEmpty: boolean`
+
+`true` if the queue has no elements.
+
+```ts
+pq.isEmpty; // true
+pq.push(1);
+pq.isEmpty; // false
+```
+
+### `clear(): void`
+
+Removes all elements from the queue. `O(1)`.
+
+```ts
+pq.push(1);
+pq.push(2);
+pq.clear();
+pq.size; // 0
+```
+
+### `drain(): T[]`
+
+Removes and returns all elements in priority order. The queue is empty after this call. `O(n log n)`.
+
+```ts
+const pq = new PriorityQueue<number>((a, b) => a - b);
+pq.push(3);
+pq.push(1);
+pq.push(2);
+
+pq.drain(); // [1, 2, 3]
+pq.isEmpty; // true
+```
+
+### `static PriorityQueue.from<T>(iterable: Iterable<T>, compare: (a: T, b: T) => number): PriorityQueue<T>`
+
+Creates a queue from an existing iterable. Uses the heapify algorithm internally, so it runs in `O(n)` — faster than pushing elements one by one (`O(n log n)`).
+
+```ts
+const pq = PriorityQueue.from([3, 1, 4, 1, 5, 9], (a, b) => a - b);
+
+pq.peek(); // 1
+pq.drain(); // [1, 1, 3, 4, 5, 9]
+```
+
 ## License
 
 MIT

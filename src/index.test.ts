@@ -58,6 +58,21 @@ describe('PriorityQueue', () => {
     expect(pq.pop()!.name).toBe('a');
   });
 
+  it('from builds a valid heap from an array in O(n)', () => {
+    const pq = PriorityQueue.from([3, 1, 4, 1, 5, 9, 2, 6], (a, b) => a - b);
+    expect(pq.drain()).toEqual([1, 1, 2, 3, 4, 5, 6, 9]);
+  });
+
+  it('from works with empty iterable', () => {
+    const pq = PriorityQueue.from([], (a, b) => a - b);
+    expect(pq.isEmpty).toBe(true);
+  });
+
+  it('from works with a single element', () => {
+    const pq = PriorityQueue.from([42], (a, b) => a - b);
+    expect(pq.pop()).toBe(42);
+  });
+
   it('isEmpty returns true on empty queue and false otherwise', () => {
     const pq = new PriorityQueue<number>((a, b) => a - b);
     expect(pq.isEmpty).toBe(true);
