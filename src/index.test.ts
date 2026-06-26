@@ -106,6 +106,21 @@ describe('PriorityQueue', () => {
     expect(pq.drain()).toEqual([]);
   });
 
+  it('reset replaces queue contents and maintains heap order', () => {
+    const pq = new PriorityQueue<number>((a, b) => a - b);
+    pq.push(99);
+    pq.reset([3, 1, 2]);
+    expect(pq.size).toBe(3);
+    expect(pq.drain()).toEqual([1, 2, 3]);
+  });
+
+  it('reset with empty iterable clears the queue', () => {
+    const pq = new PriorityQueue<number>((a, b) => a - b);
+    pq.push(1);
+    pq.reset([]);
+    expect(pq.isEmpty).toBe(true);
+  });
+
   it('drains many random elements in sorted order', () => {
     const pq = new PriorityQueue<number>((a, b) => a - b);
     const values = Array.from({ length: 1000 }, () => Math.floor(Math.random() * 10000));
@@ -239,6 +254,55 @@ describe('UseQueue', () => {
 
       wrapped.call(null);
       expect(received).toBe(42);
+    });
+  });
+
+  describe('Action.From', () => {
+    it('replaces the queue with heapified iterable', () => {
+      const pq = new PriorityQueue<number>((a, b) => a - b);
+      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(
+        () => [3, 1, 2],
+        ctx,
+      )!;
+
+      wrapped.call(null);
+      expect(pq.size).toBe(3);
+      expect(pq.drain()).toEqual([1, 2, 3]);
+    });
+
+    it('preserves the return value to the caller', () => {
+      const pq = new PriorityQueue<number>((a, b) => a - b);
+      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(
+        () => [5, 3],
+        ctx,
+      )!;
+
+      expect(wrapped.call(null)).toEqual([5, 3]);
+    });
+
+    it('overwrites previous queue contents', () => {
+      const pq = new PriorityQueue<number>((a, b) => a - b);
+      pq.push(99);
+
+      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(
+        () => [2, 1],
+        ctx,
+      )!;
+
+      wrapped.call(null);
+      expect(pq.size).toBe(2);
+      expect(pq.peek()).toBe(1);
+    });
+
+    it('works with dynamic queue ref', () => {
+      const pq = new PriorityQueue<number>((a, b) => a - b);
+      const wrapped = UseQueue<number>({ action: Action.From, queue: () => pq })(
+        () => [4, 2, 3],
+        ctx,
+      )!;
+
+      wrapped.call(null);
+      expect(pq.peek()).toBe(2);
     });
   });
 

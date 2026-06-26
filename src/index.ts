@@ -3,6 +3,7 @@ export type Comparator<T> = (a: T, b: T) => number;
 export const Action = {
   Push: 'push',
   Pop: 'pop',
+  From: 'from',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -23,6 +24,14 @@ export function UseQueue<T>(options: UseQueueOptions<T>) {
       return (...args: any[]) => {
         const result = value(...args) as T;
         resolveQueue(options.queue).push(result);
+        return result;
+      };
+    }
+
+    if (options.action === Action.From) {
+      return (...args: any[]) => {
+        const result = value(...args) as Iterable<T>;
+        resolveQueue(options.queue).reset(result);
         return result;
       };
     }
@@ -99,6 +108,13 @@ export class PriorityQueue<T> {
       pq.siftDown(i);
     }
     return pq;
+  }
+
+  reset(iterable: Iterable<T>): void {
+    this.heap = [...iterable];
+    for (let i = Math.floor((this.heap.length - 2) / 2); i >= 0; i--) {
+      this.siftDown(i);
+    }
   }
 
   clear(): void {
