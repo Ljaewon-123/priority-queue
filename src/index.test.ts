@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { PriorityQueue, Action, UseQueue } from './index.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  PriorityQueue,
+  Action,
+  UseQueue,
+  HeapStore,
+  AsyncPriorityQueue,
+  type QueueStore,
+} from './index.js';
 
 describe('PriorityQueue', () => {
   it('pops the smallest element first (min-heap)', () => {
@@ -133,6 +140,84 @@ describe('PriorityQueue', () => {
   });
 });
 
+// Fully-async store backed by a sorted array — simulates a Redis/DB adapter.
+// `reset` is intentionally omitted to exercise the clear+push fallback.
+function createAsyncStore(): QueueStore<number> & { items: number[] } {
+  return {
+    items: [] as number[],
+    async push(value: number) {
+      this.items.push(value);
+      this.items.sort((a, b) => a - b);
+    },
+    async pop() {
+      return this.items.shift();
+    },
+    async peek() {
+      return this.items[0];
+    },
+    async size() {
+      return this.items.length;
+    },
+    async clear() {
+      this.items = [];
+    },
+  };
+}
+
+describe('AsyncPriorityQueue', () => {
+  it('works with the in-memory HeapStore', async () => {
+    const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+    await pq.push(3);
+    await pq.push(1);
+    await pq.push(2);
+    expect(await pq.peek()).toBe(1);
+    expect(await pq.size()).toBe(3);
+    expect(await pq.pop()).toBe(1);
+    expect(await pq.drain()).toEqual([2, 3]);
+    expect(await pq.isEmpty()).toBe(true);
+    expect(await pq.pop()).toBeUndefined();
+  });
+
+  it('delegates core operations to a fully-async store', async () => {
+    const store = createAsyncStore();
+    const pq = new AsyncPriorityQueue(store);
+    await pq.push(5);
+    await pq.push(1);
+    expect(await pq.peek()).toBe(1);
+    expect(await pq.pop()).toBe(1);
+    expect(await pq.size()).toBe(1);
+    await pq.clear();
+    expect(await pq.isEmpty()).toBe(true);
+  });
+
+  it('reset falls back to clear + push when the store has no reset', async () => {
+    const store = createAsyncStore();
+    const pq = new AsyncPriorityQueue(store);
+    await pq.push(99);
+    await pq.reset([3, 1, 2]);
+    expect(await pq.drain()).toEqual([1, 2, 3]);
+  });
+
+  it('reset uses the store reset when provided', async () => {
+    const store = createAsyncStore();
+    const storeReset = vi.fn(async function (this: typeof store, iterable: Iterable<number>) {
+      this.items = [...iterable].toSorted((a, b) => a - b);
+    });
+    const pq = new AsyncPriorityQueue({ ...store, reset: storeReset });
+    await pq.reset([3, 1, 2]);
+    expect(storeReset).toHaveBeenCalledOnce();
+    expect(await pq.drain()).toEqual([1, 2, 3]);
+  });
+
+  it('from builds a queue on top of the given store', async () => {
+    const pq = await AsyncPriorityQueue.from(
+      [3, 1, 4, 1, 5],
+      new HeapStore<number>((a, b) => a - b)
+    );
+    expect(await pq.drain()).toEqual([1, 1, 3, 4, 5]);
+  });
+});
+
 // ctx is unused in UseQueue implementation; null satisfies the type slot
 const ctx = null as unknown as ClassMethodDecoratorContext;
 
@@ -140,10 +225,7 @@ describe('UseQueue', () => {
   describe('Action.Push', () => {
     it('auto-pushes the return value into the queue', () => {
       const pq = new PriorityQueue<number>((a, b) => a - b);
-      const wrapped = UseQueue<number>({ action: Action.Push, queue: pq })(
-        () => 42,
-        ctx,
-      )!;
+      const wrapped = UseQueue<number>({ action: Action.Push, queue: pq })(() => 42, ctx)!;
 
       wrapped.call(null);
       expect(pq.size).toBe(1);
@@ -189,7 +271,7 @@ describe('UseQueue', () => {
         (popped: number | undefined) => {
           received = popped;
         },
-        ctx,
+        ctx
       )!;
 
       wrapped.call(null);
@@ -207,7 +289,7 @@ describe('UseQueue', () => {
           receivedArg = extra;
           receivedPop = popped;
         },
-        ctx,
+        ctx
       )!;
 
       wrapped.call(null, 'hello');
@@ -222,7 +304,7 @@ describe('UseQueue', () => {
         (popped: number | undefined) => {
           received = popped;
         },
-        ctx,
+        ctx
       )!;
 
       wrapped.call(null);
@@ -249,7 +331,7 @@ describe('UseQueue', () => {
         (popped: number | undefined) => {
           received = popped;
         },
-        ctx,
+        ctx
       )!;
 
       wrapped.call(null);
@@ -260,10 +342,7 @@ describe('UseQueue', () => {
   describe('Action.From', () => {
     it('replaces the queue with heapified iterable', () => {
       const pq = new PriorityQueue<number>((a, b) => a - b);
-      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(
-        () => [3, 1, 2],
-        ctx,
-      )!;
+      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(() => [3, 1, 2], ctx)!;
 
       wrapped.call(null);
       expect(pq.size).toBe(3);
@@ -272,10 +351,7 @@ describe('UseQueue', () => {
 
     it('preserves the return value to the caller', () => {
       const pq = new PriorityQueue<number>((a, b) => a - b);
-      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(
-        () => [5, 3],
-        ctx,
-      )!;
+      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(() => [5, 3], ctx)!;
 
       expect(wrapped.call(null)).toEqual([5, 3]);
     });
@@ -284,10 +360,7 @@ describe('UseQueue', () => {
       const pq = new PriorityQueue<number>((a, b) => a - b);
       pq.push(99);
 
-      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(
-        () => [2, 1],
-        ctx,
-      )!;
+      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(() => [2, 1], ctx)!;
 
       wrapped.call(null);
       expect(pq.size).toBe(2);
@@ -298,11 +371,77 @@ describe('UseQueue', () => {
       const pq = new PriorityQueue<number>((a, b) => a - b);
       const wrapped = UseQueue<number>({ action: Action.From, queue: () => pq })(
         () => [4, 2, 3],
-        ctx,
+        ctx
       )!;
 
       wrapped.call(null);
       expect(pq.peek()).toBe(2);
+    });
+  });
+
+  describe('with an AsyncPriorityQueue', () => {
+    it('Push returns a promise that resolves to the original result after pushing', async () => {
+      const store = createAsyncStore();
+      const pq = new AsyncPriorityQueue(store);
+      const wrapped = UseQueue<number>({ action: Action.Push, queue: pq })(() => 42, ctx)!;
+
+      const result = wrapped.call(null);
+      expect(result).toBeInstanceOf(Promise);
+      expect(await result).toBe(42);
+      expect(store.items).toEqual([42]);
+    });
+
+    it('Pop awaits the store and injects the value as the last argument', async () => {
+      const store = createAsyncStore();
+      const pq = new AsyncPriorityQueue(store);
+      await pq.push(3);
+      await pq.push(1);
+
+      let received: number | undefined;
+      const wrapped = UseQueue<number>({ action: Action.Pop, queue: pq })(
+        (popped: number | undefined) => {
+          received = popped;
+        },
+        ctx
+      )!;
+
+      await wrapped.call(null);
+      expect(received).toBe(1);
+      expect(store.items).toEqual([3]);
+    });
+
+    it('Pop injects undefined when the async queue is empty', async () => {
+      const pq = new AsyncPriorityQueue(createAsyncStore());
+      let received: number | undefined = 99;
+      const wrapped = UseQueue<number>({ action: Action.Pop, queue: pq })(
+        (popped: number | undefined) => {
+          received = popped;
+        },
+        ctx
+      )!;
+
+      await wrapped.call(null);
+      expect(received).toBeUndefined();
+    });
+
+    it('From replaces the store contents and resolves to the original iterable', async () => {
+      const store = createAsyncStore();
+      const pq = new AsyncPriorityQueue(store);
+      await pq.push(99);
+
+      const wrapped = UseQueue<number>({ action: Action.From, queue: pq })(() => [3, 1, 2], ctx)!;
+
+      expect(await wrapped.call(null)).toEqual([3, 1, 2]);
+      expect(store.items).toEqual([1, 2, 3]);
+    });
+
+    it('works with dynamic queue ref (function)', async () => {
+      const store = createAsyncStore();
+      const pq = new AsyncPriorityQueue(store);
+      const wrapped = UseQueue<number>({ action: Action.Push, queue: () => pq })(() => 7, ctx)!;
+
+      await wrapped.call(null);
+      expect(store.items).toEqual([7]);
     });
   });
 
@@ -313,13 +452,13 @@ describe('UseQueue', () => {
 
       const produce = UseQueue<number>({ action: Action.Push, queue: pq })(
         (value: number) => value,
-        ctx,
+        ctx
       )!;
       const consume = UseQueue<number>({ action: Action.Pop, queue: pq })(
         (popped: number | undefined) => {
           if (popped !== undefined) log.push(popped);
         },
-        ctx,
+        ctx
       )!;
 
       produce.call(null, 3);

@@ -95,8 +95,8 @@ Before the method body runs, `queue.pop()` is called and the result is injected 
 
 ```ts
 const queue = new PriorityQueue<Task>((a, b) => a.priority - b.priority);
-queue.push({ name: 'low',  priority: 10 });
-queue.push({ name: 'high', priority:  1 });
+queue.push({ name: 'low', priority: 10 });
+queue.push({ name: 'high', priority: 1 });
 
 class TaskWorker {
   @UseQueue({ action: Action.Pop, queue })
@@ -147,6 +147,7 @@ activeQueue = anotherQueue;
 When the decorated method returns an iterable (e.g. an array), the queue is replaced wholesale with that result. Internally uses heapify (`O(n)`), which is more efficient than pushing elements one by one (`O(n log n)`).
 
 **Execution order:**
+
 1. The method runs.
 2. The queue's contents are fully replaced by the returned iterable (previous contents are discarded).
 3. The return value is passed through to the caller unchanged.
@@ -183,16 +184,16 @@ Calling `load()` again resets the queue from scratch — previous contents are g
 
 ```ts
 loader.load(); // queue is re-initialized with 3 items
-queue.size;    // 3
+queue.size; // 3
 ```
 
 Difference from `Action.Push`:
 
-| | `Action.Push` | `Action.From` |
-|---|---|---|
-| Return type | `T` (single value) | `Iterable<T>` (multiple values) |
-| Existing queue contents | Preserved (item appended) | Replaced |
-| Complexity | O(log n) | O(n) heapify |
+|                         | `Action.Push`             | `Action.From`                   |
+| ----------------------- | ------------------------- | ------------------------------- |
+| Return type             | `T` (single value)        | `Iterable<T>` (multiple values) |
+| Existing queue contents | Preserved (item appended) | Replaced                        |
+| Complexity              | O(log n)                  | O(n) heapify                    |
 
 ### Push + Pop pipeline
 
@@ -219,6 +220,116 @@ p.produce('C', 20);
 p.consume(); // queue.pop() runs first → Processing: B  (priority 10)
 p.consume(); // queue.pop() runs first → Processing: C  (priority 20)
 p.consume(); // queue.pop() runs first → Processing: A  (priority 30)
+```
+
+## Pluggable storage (Redis / DB)
+
+An in-memory queue is often just a stepping stone — real workloads usually move the queue into a central store like Redis or a database. Instead of rewriting the utility layer each time, implement the `QueueStore<T>` contract for your storage and wrap it in an `AsyncPriorityQueue`. All utilities (`drain`, `reset`, `isEmpty`, `from`, decorators) keep working on top of it.
+
+Every store method may be sync or async (`Awaitable<V> = V | Promise<V>`):
+
+```ts
+interface QueueStore<T> {
+  push(value: T): Awaitable<void>;
+  pop(): Awaitable<T | undefined>;
+  peek(): Awaitable<T | undefined>;
+  size(): Awaitable<number>;
+  clear(): Awaitable<void>;
+  reset?(iterable: Iterable<T>): Awaitable<void>; // optional batch replace
+}
+```
+
+Ordering is the store's responsibility — a Redis sorted set orders by score, so no comparator is needed at the queue level.
+
+### Example: Redis-backed store
+
+```ts
+import { AsyncPriorityQueue, type QueueStore } from '@nogaree/priority-queue';
+
+type Job = { id: string; priority: number };
+
+class RedisJobStore implements QueueStore<Job> {
+  constructor(
+    private redis: RedisClient,
+    private key: string
+  ) {}
+
+  async push(job: Job) {
+    await this.redis.zadd(this.key, job.priority, JSON.stringify(job));
+  }
+  async pop() {
+    const [member] = await this.redis.zpopmin(this.key);
+    return member ? (JSON.parse(member) as Job) : undefined;
+  }
+  async peek() {
+    const [member] = await this.redis.zrange(this.key, 0, 0);
+    return member ? (JSON.parse(member) as Job) : undefined;
+  }
+  async size() {
+    return this.redis.zcard(this.key);
+  }
+  async clear() {
+    await this.redis.del(this.key);
+  }
+}
+
+const queue = new AsyncPriorityQueue(new RedisJobStore(redis, 'jobs'));
+
+await queue.push({ id: 'a', priority: 2 });
+await queue.push({ id: 'b', priority: 1 });
+await queue.pop(); // { id: 'b', priority: 1 }
+```
+
+### `HeapStore<T>` — the in-memory default
+
+`HeapStore` wraps the binary heap `PriorityQueue` in the `QueueStore` contract. Use it as a drop-in local store (e.g. in tests) and swap it for a Redis/DB store in production without touching the surrounding code:
+
+```ts
+import { AsyncPriorityQueue, HeapStore } from '@nogaree/priority-queue';
+
+const queue = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+await queue.push(3);
+await queue.pop(); // 3
+```
+
+### `AsyncPriorityQueue<T>` API
+
+All methods return promises. Unlike the sync `PriorityQueue`, `size` and `isEmpty` are **methods**, not getters — a central store must be queried each time.
+
+| Method                            | Description                                                        |
+| --------------------------------- | ------------------------------------------------------------------ |
+| `push(value): Promise<void>`      | Delegates to `store.push`                                          |
+| `pop(): Promise<T \| undefined>`  | Delegates to `store.pop`                                           |
+| `peek(): Promise<T \| undefined>` | Delegates to `store.peek`                                          |
+| `size(): Promise<number>`         | Delegates to `store.size`                                          |
+| `isEmpty(): Promise<boolean>`     | `size() === 0`                                                     |
+| `clear(): Promise<void>`          | Delegates to `store.clear`                                         |
+| `reset(iterable): Promise<void>`  | Uses `store.reset` if implemented, otherwise `clear` + `push` loop |
+| `drain(): Promise<T[]>`           | Pops everything in priority order                                  |
+| `static from(iterable, store)`    | Builds a queue on the store and fills it via `reset`               |
+
+### Decorators with an async queue
+
+`UseQueue` accepts an `AsyncPriorityQueue` anywhere it accepts a `PriorityQueue`. With a sync queue the decorated method behaves exactly as before; with an async queue the wrapped method returns a `Promise`:
+
+```ts
+const queue = new AsyncPriorityQueue(new RedisJobStore(redis, 'jobs'));
+
+class Worker {
+  @UseQueue({ action: Action.Push, queue })
+  schedule(id: string): Job {
+    return { id, priority: Math.random() };
+  }
+
+  @UseQueue({ action: Action.Pop, queue })
+  process(popped: Job | undefined): void {
+    if (popped) console.log(`Processing: ${popped.id}`);
+  }
+}
+
+const worker = new Worker();
+await worker.schedule('a'); // resolves to the Job after the store push completes
+await worker.process(); // store.pop() is awaited, then injected as the last argument
 ```
 
 ## API

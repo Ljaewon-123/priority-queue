@@ -1,5 +1,17 @@
 export type Comparator<T> = (a: T, b: T) => number;
 
+export type Awaitable<V> = V | Promise<V>;
+
+export interface QueueStore<T> {
+  push(value: T): Awaitable<void>;
+  pop(): Awaitable<T | undefined>;
+  peek(): Awaitable<T | undefined>;
+  size(): Awaitable<number>;
+  clear(): Awaitable<void>;
+  /** Optional batch replace — implement for stores with pipeline/bulk support. */
+  reset?(iterable: Iterable<T>): Awaitable<void>;
+}
+
 export const Action = {
   Push: 'push',
   Pop: 'pop',
@@ -7,15 +19,20 @@ export const Action = {
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
-type QueueRef<T> = PriorityQueue<T> | (() => PriorityQueue<T>);
+type AnyPriorityQueue<T> = PriorityQueue<T> | AsyncPriorityQueue<T>;
+type QueueRef<T> = AnyPriorityQueue<T> | (() => AnyPriorityQueue<T>);
 
 interface UseQueueOptions<T> {
   action: Action;
   queue: QueueRef<T>;
 }
 
-function resolveQueue<T>(ref: QueueRef<T>): PriorityQueue<T> {
+function resolveQueue<T>(ref: QueueRef<T>): AnyPriorityQueue<T> {
   return typeof ref === 'function' ? ref() : ref;
+}
+
+function isThenable(x: unknown): x is Promise<unknown> {
+  return typeof (x as PromiseLike<unknown> | undefined)?.then === 'function';
 }
 
 export function UseQueue<T>(options: UseQueueOptions<T>) {
@@ -23,22 +40,22 @@ export function UseQueue<T>(options: UseQueueOptions<T>) {
     if (options.action === Action.Push) {
       return (...args: any[]) => {
         const result = value(...args) as T;
-        resolveQueue(options.queue).push(result);
-        return result;
+        const pushed = resolveQueue(options.queue).push(result);
+        return isThenable(pushed) ? pushed.then(() => result) : result;
       };
     }
 
     if (options.action === Action.From) {
       return (...args: any[]) => {
         const result = value(...args) as Iterable<T>;
-        resolveQueue(options.queue).reset(result);
-        return result;
+        const replaced = resolveQueue(options.queue).reset(result);
+        return isThenable(replaced) ? replaced.then(() => result) : result;
       };
     }
 
     return (...args: any[]) => {
       const popped = resolveQueue(options.queue).pop();
-      return value(...args, popped);
+      return isThenable(popped) ? popped.then((p) => value(...args, p)) : value(...args, popped);
     };
   };
 }
@@ -125,5 +142,91 @@ export class PriorityQueue<T> {
     const result: T[] = [];
     while (!this.isEmpty) result.push(this.pop()!);
     return result;
+  }
+}
+
+export class HeapStore<T> implements QueueStore<T> {
+  private pq: PriorityQueue<T>;
+  constructor(compare: Comparator<T>) {
+    this.pq = new PriorityQueue(compare);
+  }
+
+  push(value: T): void {
+    this.pq.push(value);
+  }
+
+  pop(): T | undefined {
+    return this.pq.pop();
+  }
+
+  peek(): T | undefined {
+    return this.pq.peek();
+  }
+
+  size(): number {
+    return this.pq.size;
+  }
+
+  clear(): void {
+    this.pq.clear();
+  }
+
+  reset(iterable: Iterable<T>): void {
+    this.pq.reset(iterable);
+  }
+}
+
+export class AsyncPriorityQueue<T> {
+  private store: QueueStore<T>;
+  constructor(store: QueueStore<T>) {
+    this.store = store;
+  }
+
+  async push(value: T): Promise<void> {
+    await this.store.push(value);
+  }
+
+  async pop(): Promise<T | undefined> {
+    return this.store.pop();
+  }
+
+  async peek(): Promise<T | undefined> {
+    return this.store.peek();
+  }
+
+  async size(): Promise<number> {
+    return this.store.size();
+  }
+
+  async isEmpty(): Promise<boolean> {
+    return (await this.store.size()) === 0;
+  }
+
+  async clear(): Promise<void> {
+    await this.store.clear();
+  }
+
+  async reset(iterable: Iterable<T>): Promise<void> {
+    if (this.store.reset) {
+      await this.store.reset(iterable);
+      return;
+    }
+    await this.store.clear();
+    for (const value of iterable) await this.store.push(value);
+  }
+
+  async drain(): Promise<T[]> {
+    const result: T[] = [];
+    while (!(await this.isEmpty())) result.push((await this.pop())!);
+    return result;
+  }
+
+  static async from<T>(
+    iterable: Iterable<T>,
+    store: QueueStore<T>
+  ): Promise<AsyncPriorityQueue<T>> {
+    const queue = new AsyncPriorityQueue(store);
+    await queue.reset(iterable);
+    return queue;
   }
 }
