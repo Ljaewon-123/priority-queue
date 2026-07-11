@@ -10,6 +10,18 @@ export interface QueueStore<T> {
   clear(): Awaitable<void>;
   /** Optional batch replace — implement for stores with pipeline/bulk support. */
   reset?(iterable: Iterable<T>): Awaitable<void>;
+  /**
+   * Optional new-item notification — implement (e.g. with Redis pub/sub) so
+   * `take`/`consume` wake immediately instead of polling. Returns an unsubscribe function.
+   */
+  subscribe?(onItem: () => void): () => void;
+}
+
+export interface TakeOptions {
+  /** Abort waiting; `take` rejects with `signal.reason`, `consume` ends the loop. */
+  signal?: AbortSignal;
+  /** Polling interval in ms for stores without `subscribe` (default 100). */
+  pollInterval?: number;
 }
 
 export const Action = {
@@ -25,6 +37,11 @@ type QueueRef<T> = AnyPriorityQueue<T> | (() => AnyPriorityQueue<T>);
 interface UseQueueOptions<T> {
   action: Action;
   queue: QueueRef<T>;
+  /**
+   * `Action.Pop` only: wait for an item instead of injecting `undefined` when
+   * the queue is empty. Requires an `AsyncPriorityQueue`.
+   */
+  wait?: boolean;
 }
 
 function resolveQueue<T>(ref: QueueRef<T>): AnyPriorityQueue<T> {
@@ -54,7 +71,14 @@ export function UseQueue<T>(options: UseQueueOptions<T>) {
     }
 
     return (...args: any[]) => {
-      const popped = resolveQueue(options.queue).pop();
+      const queue = resolveQueue(options.queue);
+      if (options.wait) {
+        if (!(queue instanceof AsyncPriorityQueue)) {
+          throw new TypeError('UseQueue: `wait: true` requires an AsyncPriorityQueue');
+        }
+        return queue.take().then((popped) => value(...args, popped));
+      }
+      const popped = queue.pop();
       return isThenable(popped) ? popped.then((p) => value(...args, p)) : value(...args, popped);
     };
   };
@@ -147,12 +171,14 @@ export class PriorityQueue<T> {
 
 export class HeapStore<T> implements QueueStore<T> {
   private pq: PriorityQueue<T>;
+  private listeners = new Set<() => void>();
   constructor(compare: Comparator<T>) {
     this.pq = new PriorityQueue(compare);
   }
 
   push(value: T): void {
     this.pq.push(value);
+    this.notify();
   }
 
   pop(): T | undefined {
@@ -173,6 +199,16 @@ export class HeapStore<T> implements QueueStore<T> {
 
   reset(iterable: Iterable<T>): void {
     this.pq.reset(iterable);
+    this.notify();
+  }
+
+  subscribe(onItem: () => void): () => void {
+    this.listeners.add(onItem);
+    return () => this.listeners.delete(onItem);
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) listener();
   }
 }
 
@@ -188,6 +224,72 @@ export class AsyncPriorityQueue<T> {
 
   async pop(): Promise<T | undefined> {
     return this.store.pop();
+  }
+
+  /**
+   * Blocking pop: resolves as soon as an item is available. Waits via the
+   * store's `subscribe` hook when present, otherwise polls every `pollInterval` ms.
+   * Rejects with `signal.reason` when aborted.
+   */
+  async take(options: TakeOptions = {}): Promise<T> {
+    const { signal, pollInterval = 100 } = options;
+
+    while (true) {
+      if (signal?.aborted) throw signal.reason;
+
+      // Subscribe before popping so a push landing in between is not missed.
+      let wake!: () => void;
+      const notified = new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+      const unsubscribe = this.store.subscribe?.(() => wake());
+
+      try {
+        const value = await this.store.pop();
+        if (value !== undefined) return value;
+
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let onAbort: (() => void) | undefined;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            if (signal?.aborted) {
+              reject(signal.reason);
+              return;
+            }
+            if (signal) {
+              onAbort = () => reject(signal.reason);
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
+            if (!unsubscribe) timer = setTimeout(resolve, pollInterval);
+            void notified.then(resolve);
+          });
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+          if (onAbort) signal?.removeEventListener('abort', onAbort);
+        }
+      } finally {
+        unsubscribe?.();
+      }
+    }
+  }
+
+  /**
+   * Async iteration over `take`: `for await (const item of queue.consume({ signal }))`.
+   * Aborting the signal ends the loop cleanly instead of throwing.
+   */
+  async *consume(options: TakeOptions = {}): AsyncGenerator<T, void, void> {
+    const { signal } = options;
+    while (true) {
+      if (signal?.aborted) return;
+      let value: T;
+      try {
+        value = await this.take(options);
+      } catch (error) {
+        if (signal?.aborted) return;
+        throw error;
+      }
+      yield value;
+    }
   }
 
   async peek(): Promise<T | undefined> {

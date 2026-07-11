@@ -218,6 +218,104 @@ describe('AsyncPriorityQueue', () => {
   });
 });
 
+describe('AsyncPriorityQueue.take', () => {
+  it('returns an available item immediately', async () => {
+    const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+    await pq.push(2);
+    await pq.push(1);
+    expect(await pq.take()).toBe(1);
+  });
+
+  it('waits on an empty queue and resolves when an item is pushed', async () => {
+    const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+    const taking = pq.take();
+    await pq.push(5);
+    expect(await taking).toBe(5);
+  });
+
+  it('wakes via HeapStore.subscribe without polling', async () => {
+    vi.useFakeTimers();
+    try {
+      const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+      let resolved: number | undefined;
+      const taking = pq.take().then((v) => (resolved = v));
+      await vi.advanceTimersByTimeAsync(0); // take reaches its wait state
+      await pq.push(7);
+      await taking; // resolves through the subscription — no timers advanced
+      expect(resolved).toBe(7);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('polls stores without subscribe', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createAsyncStore();
+      const pq = new AsyncPriorityQueue(store);
+      let resolved: number | undefined;
+      const taking = pq.take({ pollInterval: 50 }).then((v) => (resolved = v));
+      await vi.advanceTimersByTimeAsync(50); // first poll finds nothing
+      expect(resolved).toBeUndefined();
+      await pq.push(9);
+      await vi.advanceTimersByTimeAsync(50); // next poll picks it up
+      await taking;
+      expect(resolved).toBe(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects with the abort reason when aborted while waiting', async () => {
+    const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+    const controller = new AbortController();
+    const taking = pq.take({ signal: controller.signal });
+    const reason = new Error('stop');
+    controller.abort(reason);
+    await expect(taking).rejects.toBe(reason);
+  });
+
+  it('rejects immediately when the signal is already aborted', async () => {
+    const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+    const controller = new AbortController();
+    const reason = new Error('already aborted');
+    controller.abort(reason);
+    await expect(pq.take({ signal: controller.signal })).rejects.toBe(reason);
+  });
+});
+
+describe('AsyncPriorityQueue.consume', () => {
+  it('yields items in priority order and ends when aborted', async () => {
+    const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+    await pq.push(3);
+    await pq.push(1);
+    await pq.push(2);
+
+    const controller = new AbortController();
+    const seen: number[] = [];
+    for await (const item of pq.consume({ signal: controller.signal })) {
+      seen.push(item);
+      if (seen.length === 3) controller.abort();
+    }
+    expect(seen).toEqual([1, 2, 3]);
+  });
+
+  it('ends gracefully when aborted while waiting on an empty queue', async () => {
+    const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+    const controller = new AbortController();
+    const iteration = (async () => {
+      const seen: number[] = [];
+      for await (const item of pq.consume({ signal: controller.signal })) seen.push(item);
+      return seen;
+    })();
+
+    await pq.push(1);
+    await new Promise((r) => setTimeout(r, 0)); // let the loop consume 1 and start waiting
+    controller.abort();
+    expect(await iteration).toEqual([1]);
+  });
+});
+
 // ctx is unused in UseQueue implementation; null satisfies the type slot
 const ctx = null as unknown as ClassMethodDecoratorContext;
 
@@ -442,6 +540,35 @@ describe('UseQueue', () => {
 
       await wrapped.call(null);
       expect(store.items).toEqual([7]);
+    });
+  });
+
+  describe('Action.Pop with wait: true', () => {
+    it('waits for an item on an empty async queue and injects it', async () => {
+      const pq = new AsyncPriorityQueue(new HeapStore<number>((a, b) => a - b));
+
+      let received: number | undefined;
+      const wrapped = UseQueue<number>({ action: Action.Pop, queue: pq, wait: true })(
+        (popped: number | undefined) => {
+          received = popped;
+        },
+        ctx
+      )!;
+
+      const pending = wrapped.call(null);
+      await pq.push(8);
+      await pending;
+      expect(received).toBe(8);
+    });
+
+    it('throws for a sync PriorityQueue', () => {
+      const pq = new PriorityQueue<number>((a, b) => a - b);
+      const wrapped = UseQueue<number>({ action: Action.Pop, queue: pq, wait: true })(
+        () => {},
+        ctx
+      )!;
+
+      expect(() => wrapped.call(null)).toThrow(TypeError);
     });
   });
 

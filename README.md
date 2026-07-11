@@ -236,6 +236,7 @@ interface QueueStore<T> {
   size(): Awaitable<number>;
   clear(): Awaitable<void>;
   reset?(iterable: Iterable<T>): Awaitable<void>; // optional batch replace
+  subscribe?(onItem: () => void): () => void; // optional new-item notification
 }
 ```
 
@@ -306,6 +307,8 @@ All methods return promises. Unlike the sync `PriorityQueue`, `size` and `isEmpt
 | `clear(): Promise<void>`          | Delegates to `store.clear`                                         |
 | `reset(iterable): Promise<void>`  | Uses `store.reset` if implemented, otherwise `clear` + `push` loop |
 | `drain(): Promise<T[]>`           | Pops everything in priority order                                  |
+| `take(options?): Promise<T>`      | Blocking pop — waits until an item is available                    |
+| `consume(options?)`               | Async iterator over `take` for worker loops                        |
 | `static from(iterable, store)`    | Builds a queue on the store and fills it via `reset`               |
 
 ### Decorators with an async queue
@@ -330,6 +333,88 @@ class Worker {
 const worker = new Worker();
 await worker.schedule('a'); // resolves to the Job after the store push completes
 await worker.process(); // store.pop() is awaited, then injected as the last argument
+```
+
+## Consuming as a worker
+
+`pop()` returns `undefined` on an empty queue — fine for one-shot reads, but a worker wants to _wait_ for the next item. `AsyncPriorityQueue` ships two consumption primitives so you never have to hand-roll a polling loop.
+
+### `take(options?)` — blocking pop
+
+Resolves as soon as an item is available. On an empty queue it waits: via the store's `subscribe` hook when implemented (instant wake-up), otherwise by polling.
+
+```ts
+const queue = new AsyncPriorityQueue(new HeapStore<Job>((a, b) => a.priority - b.priority));
+
+const job = await queue.take(); // resolves when something is pushed
+```
+
+Options:
+
+| Option         | Description                                                           |
+| -------------- | --------------------------------------------------------------------- |
+| `signal`       | `AbortSignal` — cancel the wait; `take` rejects with `signal.reason`  |
+| `pollInterval` | Polling interval in ms for stores without `subscribe` (default `100`) |
+
+```ts
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000);
+
+try {
+  const job = await queue.take({ signal: controller.signal });
+} catch {
+  // aborted — no job within 5s
+}
+```
+
+### `consume(options?)` — worker loop with `for await`
+
+An async iterator built on `take`. Aborting the signal ends the loop cleanly (no throw), so shutdown is just `controller.abort()`:
+
+```ts
+const controller = new AbortController();
+process.on('SIGTERM', () => controller.abort());
+
+for await (const job of queue.consume({ signal: controller.signal })) {
+  await handle(job); // items arrive in priority order, as they become available
+}
+// loop exits here after abort
+```
+
+### `subscribe` — instant wake-up for your store
+
+`take`/`consume` fall back to polling, which works with any store. If your backend can signal "a new item arrived", implement the optional `subscribe` hook and waiting consumers wake immediately instead:
+
+```ts
+class RedisJobStore implements QueueStore<Job> {
+  // ...push/pop/peek/size/clear as before, plus:
+
+  async push(job: Job) {
+    await this.redis.zadd(this.key, job.priority, JSON.stringify(job));
+    await this.redis.publish(`${this.key}:new`, '1');
+  }
+
+  subscribe(onItem: () => void): () => void {
+    const sub = this.redis.duplicate();
+    sub.subscribe(`${this.key}:new`, onItem);
+    return () => sub.unsubscribe(`${this.key}:new`);
+  }
+}
+```
+
+The built-in `HeapStore` implements `subscribe`, so local queues never poll.
+
+### `wait: true` — blocking pop in decorators
+
+`Action.Pop` normally injects `undefined` when the queue is empty. With `wait: true` the decorated method waits for the next item instead (requires an `AsyncPriorityQueue`):
+
+```ts
+class Worker {
+  @UseQueue({ action: Action.Pop, queue, wait: true })
+  async process(popped: Job): Promise<void> {
+    // called only once an item is available — popped is never undefined
+  }
+}
 ```
 
 ## API

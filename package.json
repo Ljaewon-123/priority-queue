@@ -14,7 +14,8 @@
     "lint:fix": "oxlint --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "postversion": "git push && git push --tags && npm publish"
   },
   "exports": {
     ".": {
