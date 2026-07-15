@@ -1,12 +1,24 @@
 # @nogaree/priority-queue
 
-A lightweight, TypeScript-first priority queue built on a binary heap.
+A lightweight, TypeScript-first priority queue built on a binary heap — with optional async stores (Redis / SQL), method decorators, and worker-loop utilities.
+
+- **Zero dependencies.** The built-in Redis/SQL stores take _your_ client as a parameter — nothing is bundled.
+- **Fully tree-shakeable.** Built with [tsdown](https://tsdown.dev) as pure ESM with `"sideEffects": false`, so bundlers drop everything you don't import. Import just `PriorityQueue` and that's all you ship. Subpath entries (`/redis`, `/sql`) keep things minimal even without a bundler.
+- **Composable.** Every store plugs into the same `AsyncPriorityQueue`, so decorators, `take`, `consume`, and `drain` work identically in-memory, on Redis, or on SQL.
 
 ## Installation
 
 ```bash
 npm install @nogaree/priority-queue
 ```
+
+## Entry points
+
+| Import                          | Contents                    |
+| ------------------------------- | --------------------------- |
+| `@nogaree/priority-queue`       | Everything (tree-shakeable) |
+| `@nogaree/priority-queue/redis` | `RedisStore` only           |
+| `@nogaree/priority-queue/sql`   | `SqlStore` only             |
 
 ## Usage
 
@@ -222,9 +234,98 @@ p.consume(); // queue.pop() runs first → Processing: C  (priority 20)
 p.consume(); // queue.pop() runs first → Processing: A  (priority 30)
 ```
 
-## Pluggable storage (Redis / DB)
+## Built-in stores
 
-An in-memory queue is often just a stepping stone — real workloads usually move the queue into a central store like Redis or a database. Instead of rewriting the utility layer each time, implement the `QueueStore<T>` contract for your storage and wrap it in an `AsyncPriorityQueue`. All utilities (`drain`, `reset`, `isEmpty`, `from`, decorators) keep working on top of it.
+Real workloads usually move the queue into a central store. Two ready-made stores ship with the package — both are thin, dependency-free adapters over a client **you** provide, and both plug straight into `AsyncPriorityQueue` so all the utilities above (decorators, `take`, `consume`, `drain`, …) keep working unchanged.
+
+Import them from the root (tree-shaken away when unused) or from their subpath:
+
+```ts
+import { RedisStore } from '@nogaree/priority-queue/redis';
+import { SqlStore } from '@nogaree/priority-queue/sql';
+```
+
+### `RedisStore` — Redis sorted set
+
+Backed by a sorted set (`ZADD` / `ZPOPMIN`). An [ioredis](https://github.com/redis/ioredis) client satisfies the required command interface as-is; any other client works with a thin wrapper.
+
+```ts
+import Redis from 'ioredis';
+import { AsyncPriorityQueue } from '@nogaree/priority-queue';
+import { RedisStore } from '@nogaree/priority-queue/redis';
+
+type Job = { id: string; priority: number };
+
+const queue = new AsyncPriorityQueue(
+  new RedisStore<Job>({
+    client: new Redis(),
+    key: 'jobs',
+    score: (job) => job.priority, // lower score pops first
+  })
+);
+
+await queue.push({ id: 'a', priority: 2 });
+await queue.push({ id: 'b', priority: 1 });
+await queue.pop(); // { id: 'b', priority: 1 }
+```
+
+Options:
+
+| Option        | Description                                                       |
+| ------------- | ----------------------------------------------------------------- |
+| `client`      | Redis client exposing `zadd`, `zpopmin`, `zrange`, `zcard`, `del` |
+| `key`         | Sorted-set key backing the queue                                  |
+| `score`       | `(value) => number` — priority score, lower pops first            |
+| `serialize`   | Member serializer (default `JSON.stringify`)                      |
+| `deserialize` | Member deserializer (default `JSON.parse`)                        |
+
+> A sorted set is a **set**: two values that serialize to the same string collapse into one entry. Include a unique id in the payload if duplicates must survive.
+
+### `SqlStore` — any SQL database
+
+Backed by a plain table (`id` auto-increment PK, `priority` float, `payload` text). You provide an executor function that runs a parameterized statement and resolves with the rows, so it works with `pg`, `mysql2`, `better-sqlite3`, or any driver:
+
+```ts
+import pg from 'pg';
+import { AsyncPriorityQueue } from '@nogaree/priority-queue';
+import { SqlStore } from '@nogaree/priority-queue/sql';
+
+const pool = new pg.Pool();
+
+const store = new SqlStore<Job>({
+  execute: (sql, params) => pool.query(sql, params).then((r) => r.rows),
+  dialect: 'postgres', // 'postgres' | 'mysql' | 'sqlite'
+  table: 'jobs', // default 'priority_queue'
+  score: (job) => job.priority,
+});
+
+await store.setup(); // CREATE TABLE IF NOT EXISTS + index — or run your own migration
+
+const queue = new AsyncPriorityQueue(store);
+await queue.push({ id: 'a', priority: 2 });
+await queue.pop(); // { id: 'a', priority: 2 }
+```
+
+Executor adapters for common drivers:
+
+```ts
+// pg
+(sql, params) => pool.query(sql, params).then((r) => r.rows);
+// mysql2 (promise API)
+(sql, params) => pool.query(sql, params).then(([rows]) => rows);
+// better-sqlite3
+(sql, params) => Promise.resolve(db.prepare(sql).all(...params));
+```
+
+Concurrency notes per dialect:
+
+- **postgres** — `pop` is one atomic `DELETE … RETURNING` with `FOR UPDATE SKIP LOCKED`; safe for many concurrent consumers.
+- **sqlite** — `pop` is one `DELETE … RETURNING` (requires SQLite 3.35+).
+- **mysql** — `pop` is a select-then-delete pair; wrap the executor in a transaction if multiple consumers pop concurrently.
+
+## Custom stores (`QueueStore`)
+
+If the built-ins don't fit (different data layout, another backend, extra features like pub/sub wake-ups), implement the `QueueStore<T>` contract yourself and wrap it in an `AsyncPriorityQueue`. All utilities keep working on top of it.
 
 Every store method may be sync or async (`Awaitable<V> = V | Promise<V>`):
 
@@ -242,48 +343,19 @@ interface QueueStore<T> {
 
 Ordering is the store's responsibility — a Redis sorted set orders by score, so no comparator is needed at the queue level.
 
-### Example: Redis-backed store
-
 ```ts
 import { AsyncPriorityQueue, type QueueStore } from '@nogaree/priority-queue';
 
-type Job = { id: string; priority: number };
-
-class RedisJobStore implements QueueStore<Job> {
-  constructor(
-    private redis: RedisClient,
-    private key: string
-  ) {}
-
-  async push(job: Job) {
-    await this.redis.zadd(this.key, job.priority, JSON.stringify(job));
-  }
-  async pop() {
-    const [member] = await this.redis.zpopmin(this.key);
-    return member ? (JSON.parse(member) as Job) : undefined;
-  }
-  async peek() {
-    const [member] = await this.redis.zrange(this.key, 0, 0);
-    return member ? (JSON.parse(member) as Job) : undefined;
-  }
-  async size() {
-    return this.redis.zcard(this.key);
-  }
-  async clear() {
-    await this.redis.del(this.key);
-  }
+class MyStore implements QueueStore<Job> {
+  // push / pop / peek / size / clear ...
 }
 
-const queue = new AsyncPriorityQueue(new RedisJobStore(redis, 'jobs'));
-
-await queue.push({ id: 'a', priority: 2 });
-await queue.push({ id: 'b', priority: 1 });
-await queue.pop(); // { id: 'b', priority: 1 }
+const queue = new AsyncPriorityQueue(new MyStore());
 ```
 
 ### `HeapStore<T>` — the in-memory default
 
-`HeapStore` wraps the binary heap `PriorityQueue` in the `QueueStore` contract. Use it as a drop-in local store (e.g. in tests) and swap it for a Redis/DB store in production without touching the surrounding code:
+`HeapStore` wraps the binary heap `PriorityQueue` in the `QueueStore` contract. Use it as a drop-in local store (e.g. in tests) and swap it for a Redis/SQL store in production without touching the surrounding code:
 
 ```ts
 import { AsyncPriorityQueue, HeapStore } from '@nogaree/priority-queue';
@@ -316,7 +388,9 @@ All methods return promises. Unlike the sync `PriorityQueue`, `size` and `isEmpt
 `UseQueue` accepts an `AsyncPriorityQueue` anywhere it accepts a `PriorityQueue`. With a sync queue the decorated method behaves exactly as before; with an async queue the wrapped method returns a `Promise`:
 
 ```ts
-const queue = new AsyncPriorityQueue(new RedisJobStore(redis, 'jobs'));
+const queue = new AsyncPriorityQueue(
+  new RedisStore<Job>({ client: redis, key: 'jobs', score: (j) => j.priority })
+);
 
 class Worker {
   @UseQueue({ action: Action.Push, queue })
@@ -383,10 +457,10 @@ for await (const job of queue.consume({ signal: controller.signal })) {
 
 ### `subscribe` — instant wake-up for your store
 
-`take`/`consume` fall back to polling, which works with any store. If your backend can signal "a new item arrived", implement the optional `subscribe` hook and waiting consumers wake immediately instead:
+`take`/`consume` fall back to polling, which works with any store (including the built-in `RedisStore`/`SqlStore`). If your backend can signal "a new item arrived", implement the optional `subscribe` hook in a custom store and waiting consumers wake immediately instead:
 
 ```ts
-class RedisJobStore implements QueueStore<Job> {
+class MyRedisStore implements QueueStore<Job> {
   // ...push/pop/peek/size/clear as before, plus:
 
   async push(job: Job) {
